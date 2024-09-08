@@ -16,9 +16,8 @@ from cv_bridge import CvBridge
 
 from feature_track import FeatureTracker
 from utils.parameters import readParameters
-from utils.onnx_tools import resize_image
-from utils.xfeat_onnx_extractor import XFEAT_ONNX_Extractor
-from utils.xfeat_onnx_matcher import XFEAT_ONNX_Matcher
+from utils.superpoint import SuperPoint
+from utils.lightglue import LightGlue
 from typing import Optional
 
 pub_img: Optional[rospy.Publisher] = None  # publish /feature_tracker/feature topic，topic type (Point32)
@@ -165,22 +164,22 @@ def img_callback(img_msg, params):
     
 def warm_up(extractor, matcher, test_image_path0: str, test_image_path1: str):
     """warm up
-       Inputs: extractor: ort.InferenceSession; matcher: ort.InferenceSession; test_image_path0: str; test_image_path1: str"""
+       Inputs: extractor: torch model; matcher: torch model; test_image_path0: str; test_image_path1: str"""
     test_img0 = cv2.imread(test_image_path0, cv2.IMREAD_COLOR)
     test_img1 = cv2.imread(test_image_path1, cv2.IMREAD_COLOR)
-    input_img0, resize_img0, resize_scale0 = resize_image(test_img0, (480, 640))
-    input_img1, resize_img1, resize_scale1 = resize_image(test_img1, (480, 640))
+    torch_forw_img0 = numpy_image_to_torch(test_img0)
+    torch_forw_img1 = numpy_image_to_torch(test_img1)
     consume_times = []
 
-    for i in tqdm.tqdm(range(1000)):
+    for i in tqdm.tqdm(range(100)):
         start_time = time.time()
         
         # image infer
-        mkpts0, sc0, feats0 = extractor(input_img0)
-        mkpts1, sc1, feats1 = extractor(input_img1)
+        ptsdesc0 = extractor.extract(torch_forw_img0)
+        ptsdesc1 = extractor.extract(torch_forw_img1)
             
        # matcher infer
-        matches = matcher(feats0, feats1)
+        matches = matcher({'image0': ptsdesc0, 'image1': ptsdesc1})
         
         consume_times.append(time.time() - start_time)
     
@@ -193,6 +192,8 @@ def main(config_path):
     global pub_match  
     global pub_restart  
     global trackerData
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # select devices
     
     test_image_path0 = "assets/DSC_0410.JPG"
     test_image_path1 = "assets/DSC_0411.JPG"  
@@ -200,13 +201,14 @@ def main(config_path):
     rospy.init_node("feature_tracker", log_level=rospy.INFO)  # Set the node name and output message level
     
     # The function to read parameters and return a dictionary of parameters
-    params = readParameters(config_path)  
+    params = readParameters(config_path)
+    params['device'] = device  
 
     # Load a model for extracting feature points from images
-    extractor = XFEAT_ONNX_Extractor(params["extractor_onnx_path"], params["postprocess_onnx_path"], params["extractor_engine_path"], params["postprocess_engine_path"], params["top_k"])  
+    extractor = SuperPoint(max_num_keypoints=params['max_cnt']).eval().to(device)  
     
     # Load a model for feature point matching
-    matcher = XFEAT_ONNX_Matcher(params['matcher_onnx_path'], params['matcher_engine_path'])
+    matcher = LightGlue(features='superpoint').eval().to(device)
     
     # warm up
     warm_up(extractor, matcher, test_image_path0, test_image_path1)  

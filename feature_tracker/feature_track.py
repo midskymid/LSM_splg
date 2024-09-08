@@ -5,7 +5,7 @@ import torch
 import time
 from scipy import linalg
 from utils.camera_models import PinholeCamera
-from utils.onnx_tools import print_gpu_usage, resize_image
+from utils.tools import print_gpu_usage, numpy_image_to_torch
 
 # For data alignment
 def reduceVector(v, status):
@@ -51,11 +51,8 @@ class FeatureTracker:
         self.prev_desc = np.empty((0,0), dtype=np.float32)  # size -> (N, 64), Store the descriptors of the feature points from two frames ago
         self.cur_desc = np.empty((0,0), dtype=np.float32)  # size -> (N, 64), Store the descriptors of the feature points from the previous frame
         self.forw_desc = np.empty((0,0), dtype=np.float32)  # size -> (N, 64), Store the descriptors of the feature points from the latest frame
-        self.forw_sc0 = np.empty(0, dtype=np.float32)
-        self.cur_sc0 = np.empty(0, dtype=np.float32)
-        self.prev_sc0 = np.empty(0, dtype=np.float32)
-        self.n_sc0 = np.empty(0, dtype=np.float32)
         self.n_desc = np.empty((0,0), dtype=np.float32)  # Store the descriptors of the feature points to be used in the addPoints function
+        self.image_size = None  # size of image
         
 
     def inBorder(self, pt: np.ndarray) -> bool:
@@ -87,43 +84,30 @@ class FeatureTracker:
         
         self.forw_pts = np.empty((0,0), dtype=np.float32)
         self.forw_desc = np.empty((0,0), dtype=np.float32)
-        self.forw_sc0 = np.empty(0, dtype=np.float32)
 
         if np.size(self.cur_pts) > 2:
             # organize input of extractor and get outputs of extractor
-            # input_img: np.ndarray: size: (B, C, H, W) 
-            # self.resize_img: np.ndarray: size: (H, W, C) 
-            # self.resize_scale: tuple: size: (w_new / w, h_new / h)
+            # torch_forw_img: torch.Tensor: size: (B, C, H, W) 
 
-            input_img, self.resize_img, self.resize_scale = resize_image(self.forw_img, (480, 640))
+            torch_forw_img = numpy_image_to_torch(self.forw_img)
             
-            mkpts1, sc1, feats1 = self.extractor(input_img)  # extract features
+            forw_ptsdesc = self.extractor.extract(torch_forw_img)  # extract features
+            self.image_size = forw_ptsdesc['image_size']
 
-            mkpts1[:,:,0] = mkpts1[:,:,0] / self.resize_scale[0]  # Restore feature point scales to the original image scale
-            mkpts1[:,:,1] = mkpts1[:,:,1] / self.resize_scale[1]  # Restore feature point scales to the original image scale
+            tensor_cur_pts = torch.from_numpy(self.cur_pts).float()  # transfer np.ndarray to torch.Tensor
+            tensor_cur_desc = torch.from_numpy(self.cur_desc).float()  
+            _cur_pts = tensor_cur_pts.unsqueeze(0).to(self.params['device'])  # add batch dimension
+            _cur_desc = tensor_cur_desc.unsqueeze(0).requires_grad_().to(self.params['device'])  # add batch dimension
+            cur_ptsdesc = {
+                'keypoints': _cur_pts,
+                'descriptors': _cur_desc,
+                'image_size': self.image_size
+            }  # organize input of Lightglue
             
-            kpts1 = mkpts1.reshape(-1, 2)  # Remove the batch dimension
-            desc1 = feats1.reshape(-1, feats1.shape[-1])  # Remove the batch dimension
-            sc1 = sc1.reshape(-1)
+            src_matches = self.matcher({'image0': cur_ptsdesc, 'image1': forw_ptsdesc})  # descriptor matching
             
-            # The feature point location information and descriptor information from the previous time step
-            kpts0 = self.cur_pts
-            desc0 = self.cur_desc
-            sc0 = self.cur_sc0
-
-            # --------test codes-----------
-            # print("kpts0.shape: ", kpts0.shape)
-            # print("desc0.shape: ", desc0.shape)
-            # print("sc0.shape: ", sc0.shape)
-            # print("mkpts1.shape: ", mkpts1.shape)
-            # print("feats1.shape: ", feats1.shape)
-            # --------test codes-----------
-            
-            matches = self.matcher(desc0[None], feats1)  # match index
-            idx0 = matches[:,0]
-            idx1 = matches[:,1]
-
-            mkpts_0, mkpts_1 = kpts0[idx0], kpts1[idx1]  # mkpts_i.shape->numpy.ndarray[N, 2]
+            feats0, feats1, matches01 = [rbd(x) for x in [cur_ptsdesc, forw_ptsdesc, src_matches]]  # remove batch dim
+            kpts0, kdesc1, kpts1, matches = feats0['keypoints'].cpu().numpy(), feats1['descriptors'].detach().cpu().numpy(), feats1['keypoints'].cpu().numpy(), matches01['matches'].cpu().numpy()  # transfer torch.Tensor to np.ndarray
             
             # Initialize the matching status array, with 0 indicating unsuccessful tracking and 1 indicating successful tracking        
             status = np.zeros(kpts0.shape[0], dtype=np.int32)
@@ -133,15 +117,13 @@ class FeatureTracker:
             
             # Initialize the array for the latest frame descriptor information
             self.forw_desc = np.zeros_like(desc0)
-
-            # Initialize the array for the latest frame feature scores information
-            self.forw_sc0 = np.zeros_like(sc0)
             
             # Update the matching status array, the latest frame's feature point location information array, and the latest frame descriptor information array
+            idx0 = matches[:,0]
+            idx1 = matches[:,1]
             status[idx0] = 1
             self.forw_pts[idx0] = kpts1[idx1]
             self.forw_desc[idx0] = desc1[idx1]
-            self.forw_sc0[idx0] = sc1[idx1]
             
             # The feature points at the edge positions of the image are set as unmatched for easy discarding by the subsequent reduceVector function
             for i in range(kpts0.shape[0]):
@@ -152,17 +134,14 @@ class FeatureTracker:
             self.prev_pts = reduceVector(self.prev_pts, status)
             self.prev_pts = np.reshape(self.prev_pts, (-1, 2))
             self.prev_desc = reduceVector(self.prev_desc, status)
-            self.prev_sc0 = reduceVector(self.prev_sc0, status)
 
             self.cur_pts = reduceVector(self.cur_pts, status)
             self.cur_pts = np.reshape(self.cur_pts, (-1, 2))
             self.cur_desc = reduceVector(self.cur_desc, status)
-            self.cur_sc0 = reduceVector(self.cur_sc0, status)
 
             self.forw_pts = reduceVector(self.forw_pts, status)
             self.forw_pts = np.reshape(self.forw_pts, (-1, 2))
             self.forw_desc = reduceVector(self.forw_desc, status)
-            self.forw_sc0 = reduceVector(self.forw_sc0, status)
 
             self.ids = reduceVector(self.ids, status)
             self.cur_un_pts = reduceVector(self.cur_un_pts, status)
@@ -188,14 +167,14 @@ class FeatureTracker:
                     print("wrong size ")
                 
                 # extract kpts
-                input_img, self.resize_img, self.resize_scale = resize_image(self.forw_img, (480, 640))
-                mkpts, sc, feats = self.extractor(input_img)
+                torch_forw_img = numpy_image_to_torch(self.forw_img)
                 
-                self.n_sc0 = sc.reshape(-1)
-                self.n_pts = np.reshape(mkpts, (-1, mkpts.shape[-1]))
-                self.n_pts[:, 0] = self.n_pts[:, 0] / self.resize_scale[0]
-                self.n_pts[:, 1] = self.n_pts[:, 1] / self.resize_scale[1]
-                self.n_desc = np.reshape(feats, (-1, feats.shape[-1]))
+                n_ptsdesc = self.extractor.extract(torch_forw_img.to(self.params['device']))
+                self.image_size = n_ptsdesc['image_size']
+                n_pts = n_ptsdesc['keypoints'].cpu().numpy()
+                self.n_pts = np.reshape(n_pts, (-1, n_pts.shape[-1]))
+                n_desc = n_ptsdesc['descriptors'].detach().cpu().numpy()
+                self.n_desc = np.reshape(n_desc, (-1, n_desc.shape[-1]))
                                 
                 rospy.logdebug("add feature begins")
                 
@@ -208,12 +187,10 @@ class FeatureTracker:
         self.prev_img = self.cur_img
         self.prev_pts = self.cur_pts
         self.prev_desc = self.cur_desc
-        self.prev_sc0 = self.cur_sc0
         self.prev_un_pts = self.cur_un_pts
         self.cur_img = self.forw_img
         self.cur_pts = self.forw_pts
         self.cur_desc = self.forw_desc
-        self.cur_sc0 = self.forw_sc0
         self.undistortedPoints()
         self.prev_time = self.cur_time
 
@@ -229,12 +206,11 @@ class FeatureTracker:
         cnt_pts_id = []
 
         for i in range(self.forw_pts.shape[0]):
-            cnt_pts_id.append((self.track_cnt[i], (self.forw_pts[i], self.ids[i], self.forw_desc[i], self.forw_sc0[i])))
+            cnt_pts_id.append((self.track_cnt[i], (self.forw_pts[i], self.ids[i], self.forw_desc[i])))
         cnt_pts_id.sort(reverse=True, key=lambda x: x[0])  # Sort based on the number of matches
 
         self.forw_pts = np.empty((0,0), dtype=np.float32)
         self.forw_desc = np.empty((0,0), dtype=np.float32)
-        self.forw_sc0 = np.empty(0, dtype=np.float32)
         self.ids = np.empty(0, dtype=np.int64)
         self.track_cnt = np.empty(0, dtype=np.int64)
         self.n_pts = np.empty((0,0), dtype=np.float32)
@@ -244,11 +220,9 @@ class FeatureTracker:
             if self.mask[round(it[1][0][1]), round(it[1][0][0])] == 255:
                 point = it[1][0]
                 desc = it[1][2]
-                sc0 = it[1][3]
-                if np.size(point) and np.size(desc) and np.size(sc0):
+                if np.size(point) and np.size(desc):
                     point = np.reshape(point, (-1, point.size))
                     desc = np.reshape(desc, (-1, desc.size))
-                    sc0 = np.reshape(sc0, (-1))
 
                     if np.size(self.forw_pts) == 0:
                         self.forw_pts = point
@@ -259,8 +233,6 @@ class FeatureTracker:
                         self.forw_desc = desc
                     else:
                         self.forw_desc = np.vstack((self.forw_desc, desc))
-
-                    self.forw_sc0 = np.append(self.forw_sc0, sc0)
 
                     if np.size(self.ids) == 0:
                         self.ids = it[1][1]
@@ -278,10 +250,8 @@ class FeatureTracker:
             else:
                 point = it[1][0]
                 desc = it[1][2]
-                sc0 = it[1][3]
                 point = np.reshape(point, (-1, point.size))
                 desc = np.reshape(desc, (-1, desc.size))
-                sc0 = np.reshape(sc0, (-1))
              # Store the points that were successfully matched but removed due to being too close, so they can be added in the addPoints function to avoid extracting image feature point information again 
                 if np.size(self.n_pts) == 0:
                     self.n_pts = point
@@ -292,8 +262,6 @@ class FeatureTracker:
                     self.n_desc = desc
                 else:
                     self.n_desc = np.vstack((self.n_desc, desc))
-
-                self.n_sc0 = np.append(self.n_sc0, sc0)
 
         # --------test codes-----------
         # print("----------------------")
@@ -308,10 +276,9 @@ class FeatureTracker:
     def addPoints(self):
         
         # more efficient than the old one
-        if np.size(self.forw_pts) == 0 or np.size(self.forw_desc) == 0 or np.size(self.forw_sc0) == 0:
+        if np.size(self.forw_pts) == 0 or np.size(self.forw_desc) == 0:
             self.forw_pts = self.n_pts[:self.n_max_cnt]
             self.forw_desc = self.n_desc[:self.n_max_cnt]
-            self.forw_sc0 = self.n_sc0[:self.n_max_cnt]
 
             n_ones = np.ones(self.n_max_cnt)
             self.ids = np.append(self.ids, -n_ones)
@@ -319,11 +286,9 @@ class FeatureTracker:
         else:
             add_n_pts = self.n_pts[:self.n_max_cnt]
             add_n_desc = self.n_desc[:self.n_max_cnt]
-            add_n_sc0 = self.n_sc0[:self.n_max_cnt]
 
             self.forw_pts = np.vstack((self.forw_pts, add_n_pts))
             self.forw_desc = np.vstack((self.forw_desc, add_n_desc))
-            self.forw_sc0 = np.append(self.forw_sc0, add_n_sc0)
 
             n_ones = np.ones(self.n_max_cnt)
             self.ids = np.append(self.ids, -n_ones)
@@ -360,13 +325,10 @@ class FeatureTracker:
             size_a = self.cur_pts.shape[0]
             self.prev_pts = reduceVector(self.prev_pts, status)
             self.prev_desc = reduceVector(self.prev_desc, status)
-            self.prev_sc0 = reduceVector(self.prev_sc0, status)
             self.cur_pts = reduceVector(self.cur_pts, status)
             self.cur_desc = reduceVector(self.cur_desc, status)
-            self.cur_sc0 = reduceVector(self.cur_sc0, status)
             self.forw_pts = reduceVector(self.forw_pts, status)
             self.forw_desc = reduceVector(self.forw_desc, status)
-            self.forw_sc0 = reduceVector(self.forw_sc0, status)
             self.ids = reduceVector(self.ids, status)
             self.cur_un_pts = reduceVector(self.cur_un_pts, status)
             self.track_cnt = reduceVector(self.track_cnt, status)
