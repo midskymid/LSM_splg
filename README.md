@@ -17,16 +17,16 @@ This repository implements the ROS2 version of VINS-MONO, mainly including the f
   * OpenCV 4.2.0
   * [Ceres Solver](http://ceres-solver.org/installation.html) 1.14.0
   * Eigen 3.3.7
-# 3. Build LSM_sp_lg
+# 3. Build LSM_splg
 Clone the repository and catkin_make:  
 ```
 cd $(PATH_TO_YOUR_ROS2_WS)/src
-git clone https://github.com/midskymid/LSM_sp_lg.git
+git clone https://github.com/midskymid/LSM_splg.git
 cd ..
 catkin_make
 ```
 **PS: Don't forget to modify file paths of AQUALOC_config.yaml and feature_tracker_node.py.**
-# 4. LSM_sp_lg on AQUALOC datasets
+# 4. LSM_splg on AQUALOC datasets
 ## 4.1. ROS1 bag
 Download [AQUALOC Archaeological datasets](https://seafile.lirmm.fr/d/79b03788f29148ca84e5/?p=%2FArchaeological_site_sequences&mode=list).   
 ## 4.2. Visual-inertial odometry and loop closure
@@ -45,5 +45,5 @@ We use ros1 version of [VINS MONO](https://github.com/HKUST-Aerial-Robotics/VINS
 # 6. Licence
 The source code is released under [GPLv3](https://www.gnu.org/licenses/) license.
 
-# LSM_sp_lg_trt
+# LSM_splg_trt
 A Learning-based Subaquatic Monocular Visual-Inertial Odometry Designed for the Jetson Platform coming soon...
