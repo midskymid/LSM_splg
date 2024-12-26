@@ -40,7 +40,7 @@ rosbag play $(PATH_TO_YOUR_DATASET)/archaeo_sequence_1.bag              # for ro
 ```
 # 5. Acknowledgements
 We use ros1 version of [VINS MONO](https://github.com/HKUST-Aerial-Robotics/VINS-Mono),  [ceres solver](http://ceres-solver.org/installation.html) for non-linear optimization, [DBoW2](https://github.com/dorian3d/DBoW2) for loop detection. Also, we referred to parts of the implementations from [SuperPoint](https://github.com/rpautrat/SuperPoint) and (https://github.com/magicleap/SuperPointPretrainedNetwork),
-[LightGlue] (https://github.com/cvg/LightGlue) and (https://github.com/fabio-sim/LightGlue-ONNX)
+[LightGlue](https://github.com/cvg/LightGlue) and (https://github.com/fabio-sim/LightGlue-ONNX)
 
 # 6. Licence
 The source code is released under [GPLv3](https://www.gnu.org/licenses/) license.
