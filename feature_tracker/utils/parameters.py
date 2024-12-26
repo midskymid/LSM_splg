@@ -18,6 +18,8 @@ def readParameters(path: str) -> dict:
     
         params['image_topic'] = fs.getNode('image_topic').string()
         params['imu_topic'] = fs.getNode('imu_topic').string()
+        params['sp_uw_model_path'] = fs.getNode('sp_uw_model_path').string()
+        params['sp_lg_model_path'] = fs.getNode('sp_lg_model_path').string()
         params['extractor_onnx_path'] = fs.getNode('extractor_onnx_path').string()
         params['matcher_onnx_path'] = fs.getNode('matcher_onnx_path').string()
         params['postprocess_onnx_path'] = fs.getNode('postprocess_onnx_path').string()

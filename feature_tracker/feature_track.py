@@ -3,9 +3,8 @@ import rospy
 import numpy as np
 import torch
 import time
-from scipy import linalg
 from utils.camera_models import PinholeCamera
-from utils.tools import print_gpu_usage, numpy_image_to_torch
+from utils.tools import print_gpu_usage, numpy_image_to_torch, rbd
 
 # For data alignment
 def reduceVector(v, status):
@@ -91,13 +90,14 @@ class FeatureTracker:
 
             torch_forw_img = numpy_image_to_torch(self.forw_img)
             
-            forw_ptsdesc = self.extractor.extract(torch_forw_img)  # extract features
-            self.image_size = forw_ptsdesc['image_size']
+            forw_ptsdesc = self.extractor(torch_forw_img[None].to(self.params['device']))
 
             tensor_cur_pts = torch.from_numpy(self.cur_pts).float()  # transfer np.ndarray to torch.Tensor
             tensor_cur_desc = torch.from_numpy(self.cur_desc).float()  
             _cur_pts = tensor_cur_pts.unsqueeze(0).to(self.params['device'])  # add batch dimension
-            _cur_desc = tensor_cur_desc.unsqueeze(0).requires_grad_().to(self.params['device'])  # add batch dimension
+            
+            _cur_desc = tensor_cur_desc.unsqueeze(0).to(self.params['device'])
+            
             cur_ptsdesc = {
                 'keypoints': _cur_pts,
                 'descriptors': _cur_desc,
@@ -107,7 +107,7 @@ class FeatureTracker:
             src_matches = self.matcher({'image0': cur_ptsdesc, 'image1': forw_ptsdesc})  # descriptor matching
             
             feats0, feats1, matches01 = [rbd(x) for x in [cur_ptsdesc, forw_ptsdesc, src_matches]]  # remove batch dim
-            kpts0, kdesc1, kpts1, matches = feats0['keypoints'].cpu().numpy(), feats1['descriptors'].detach().cpu().numpy(), feats1['keypoints'].cpu().numpy(), matches01['matches'].cpu().numpy()  # transfer torch.Tensor to np.ndarray
+            desc0, kpts0, desc1, kpts1, matches = feats0['descriptors'].detach().cpu().numpy(), feats0['keypoints'].cpu().numpy(), feats1['descriptors'].detach().cpu().numpy(), feats1['keypoints'].cpu().numpy(), matches01['matches'].cpu().numpy()  # transfer torch.Tensor to np.ndarray
             
             # Initialize the matching status array, with 0 indicating unsuccessful tracking and 1 indicating successful tracking        
             status = np.zeros(kpts0.shape[0], dtype=np.int32)
@@ -157,7 +157,6 @@ class FeatureTracker:
             self.setMask()  # Remove feature points that are too densely clustered in the image
             
             self.n_max_cnt = self.params['max_cnt'] - self.forw_pts.shape[0]
-            # print("self.n_max_cnt size", self.n_max_cnt)
             if self.n_max_cnt > 0:
                 if np.size(self.mask) == 0:
                     print("mask is empty ")
@@ -169,8 +168,10 @@ class FeatureTracker:
                 # extract kpts
                 torch_forw_img = numpy_image_to_torch(self.forw_img)
                 
-                n_ptsdesc = self.extractor.extract(torch_forw_img.to(self.params['device']))
-                self.image_size = n_ptsdesc['image_size']
+                n_ptsdesc = self.extractor(torch_forw_img[None].to(self.params['device']))
+                shape = torch_forw_img.shape[-2:][::-1]
+
+                self.image_size = torch.tensor(shape)[None].to(self.params['device']).float()
                 n_pts = n_ptsdesc['keypoints'].cpu().numpy()
                 self.n_pts = np.reshape(n_pts, (-1, n_pts.shape[-1]))
                 n_desc = n_ptsdesc['descriptors'].detach().cpu().numpy()
@@ -194,10 +195,6 @@ class FeatureTracker:
         self.undistortedPoints()
         self.prev_time = self.cur_time
 
-        # --------test codes-----------
-        # print("self.cur_un_pts.shape: ", self.cur_un_pts.shape)
-        # print_gpu_usage()
-        # --------test codes-----------
 
     # Remove feature points that are too close to each other and have fewer matches based on the number of times they have been matched                  
     def setMask(self):  
@@ -262,15 +259,6 @@ class FeatureTracker:
                     self.n_desc = desc
                 else:
                     self.n_desc = np.vstack((self.n_desc, desc))
-
-        # --------test codes-----------
-        # print("----------------------")
-        # print("self.forw_pts shape: ", self.forw_pts.shape)
-        # print("self.track_cnt shape: ", self.track_cnt.shape)
-        # print("self.forw_desc shape: ", self.forw_desc.shape)
-        # print("self.ids shape: ", self.ids.shape)
-        # print("self.n_pts shape: ", self.n_pts.shape)
-        # --------test codes-----------
 
     # Insufficient number of feature points may affect subsequent steps like nonlinear optimization; add some new feature point information
     def addPoints(self):
@@ -338,12 +326,6 @@ class FeatureTracker:
     def undistortedPoints(self):
         self.cur_un_pts = np.empty((0,0))
         self.cur_un_pts_map = []
-
-        # --------test codes-----------
-        # print("self.cur_pts size: ", np.size(self.cur_pts))
-        # print("self.ids size: ", np.size(self.ids))
-        # print("self.cur_pts shape: ", self.cur_pts.shape)
-        # --------test codes-----------
         
         if np.size(self.ids) == 1:
             self.ids = np.reshape(self.ids, (-1))

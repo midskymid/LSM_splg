@@ -1,5 +1,5 @@
 <launch>
-    <arg name="config_path" default = "$(find vins_estimator)/../config/euroc/euroc_config.yaml" />
+    <arg name="config_path" default = "$(find vins_estimator)/../config/euroc/AQUALOC_config.yaml" />
 	  <arg name="vins_path" default = "$(find vins_estimator)/../config/../" />
     
 

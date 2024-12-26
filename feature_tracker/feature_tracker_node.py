@@ -4,11 +4,9 @@ import cv2
 import numpy as np
 import tqdm
 import time
-import onnxruntime as ort
 
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import PointCloud
-from sensor_msgs.msg import Imu
 from sensor_msgs.msg import ChannelFloat32
 from geometry_msgs.msg import Point32
 from std_msgs.msg import Bool
@@ -16,8 +14,9 @@ from cv_bridge import CvBridge
 
 from feature_track import FeatureTracker
 from utils.parameters import readParameters
-from utils.superpoint import SuperPoint
+from utils.superpoint_open import SuperPointOpen
 from utils.lightglue import LightGlue
+from utils.tools import numpy_image_to_torch
 from typing import Optional
 
 pub_img: Optional[rospy.Publisher] = None  # publish /feature_tracker/feature topic，topic type (Point32)
@@ -77,14 +76,11 @@ def img_callback(img_msg, params):
     # get and process image
     bridge = CvBridge()
     try:
-        ptr = bridge.imgmsg_to_cv2(img_msg, "bgr8")
+        ptr = bridge.imgmsg_to_cv2(img_msg, "mono8")
     except Exception as e:
-        print("convert ROS image message to OpenCV format(BGR8) image Error!")
-
-    # if params['equalize']:
-        # clahe = cv2.createCLAHE(3, (8, 8))
-        # ptr = clahe.apply(ptr)
-
+        print("convert ROS image message to OpenCV format(GRAY) image Error!")
+        return
+    
     show_img = ptr.copy()
 
     rospy.logdebug('processing camera')
@@ -156,7 +152,7 @@ def img_callback(img_msg, params):
                 for j in range(trackerData.cur_pts.shape[0]):
                     len = min(1.0, 1.0 * trackerData.track_cnt[j] / 20)
                     cv2.circle(tmp_img, [round(trackerData.cur_pts[j, 0]), round(trackerData.cur_pts[j, 1])], 2, (round(255 * (1 - len)), 0, round(255 * len)), 2)
-                tmp_img_msg = bridge2.cv2_to_imgmsg(tmp_img, 'bgr8')
+                tmp_img_msg = bridge2.cv2_to_imgmsg(tmp_img, 'mono8')
 
                 pub_match.publish(tmp_img_msg)
 
@@ -165,8 +161,11 @@ def img_callback(img_msg, params):
 def warm_up(extractor, matcher, test_image_path0: str, test_image_path1: str):
     """warm up
        Inputs: extractor: torch model; matcher: torch model; test_image_path0: str; test_image_path1: str"""
-    test_img0 = cv2.imread(test_image_path0, cv2.IMREAD_COLOR)
-    test_img1 = cv2.imread(test_image_path1, cv2.IMREAD_COLOR)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # print(device)
+    test_img0 = cv2.imread(test_image_path0, cv2.IMREAD_GRAYSCALE)
+    test_img1 = cv2.imread(test_image_path1, cv2.IMREAD_GRAYSCALE)
+    
     torch_forw_img0 = numpy_image_to_torch(test_img0)
     torch_forw_img1 = numpy_image_to_torch(test_img1)
     consume_times = []
@@ -175,13 +174,15 @@ def warm_up(extractor, matcher, test_image_path0: str, test_image_path1: str):
         start_time = time.time()
         
         # image infer
-        ptsdesc0 = extractor.extract(torch_forw_img0)
-        ptsdesc1 = extractor.extract(torch_forw_img1)
+        ptsdesc0 = extractor(torch_forw_img0[None].to(device))
+        ptsdesc1 = extractor(torch_forw_img1[None].to(device))
             
        # matcher infer
-        matches = matcher({'image0': ptsdesc0, 'image1': ptsdesc1})
+        matches = matcher({"image0": ptsdesc0, "image1": ptsdesc1})
         
         consume_times.append(time.time() - start_time)
+
+    
     
     print(f"Average FPS per image: {1/np.mean(consume_times):.4f}")
     print("finished warm up...")
@@ -205,10 +206,10 @@ def main(config_path):
     params['device'] = device  
 
     # Load a model for extracting feature points from images
-    extractor = SuperPoint(max_num_keypoints=params['max_cnt']).eval().to(device)  
+    extractor = SuperPointOpen(max_num_keypoints=params['max_cnt'], model_path=params['sp_uw_model_path']).eval().to(device)  
     
     # Load a model for feature point matching
-    matcher = LightGlue(features='superpoint').eval().to(device)
+    matcher = LightGlue(features='superpoint', model_path=params['sp_lg_model_path']).eval().to(device)
     
     # warm up
     warm_up(extractor, matcher, test_image_path0, test_image_path1)  
@@ -231,7 +232,7 @@ def main(config_path):
     rospy.spin()
 
 if __name__ == "__main__":
-    config_path = "/home/fsse/LSM_ws/src/LSM/config/euroc/euroc_config.yaml"
+    config_path = "/home/midsky/LSM_sp_lg_ws/src/LSM_splg/config/euroc/AQUALOC_config.yaml"
     main(config_path)
     
 
