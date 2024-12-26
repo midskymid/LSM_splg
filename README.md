@@ -30,7 +30,7 @@ catkin_make
 ## 4.1. ROS1 bag
 Download [AQUALOC Archaeological datasets](https://seafile.lirmm.fr/d/79b03788f29148ca84e5/?p=%2FArchaeological_site_sequences&mode=list).   
 ## 4.2. Visual-inertial odometry and loop closure
-All configuration files are in the package, **_config_pkg_**.  
+All configuration files are in the package, **_config_**.  
 Open four terminals, launch the feature_tracker, vins_estimator, rviz2, and ros2 bag. Take the MH01 for example
 ```
 roslaunch vins_estimator vins_rviz.launch                               # for rviz
